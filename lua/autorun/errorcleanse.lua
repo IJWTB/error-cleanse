@@ -1,158 +1,209 @@
-if SERVER then
-	AddCSLuaFile()
-	resource.AddFile("models/props/smallcubetrt.mdl")
-	resource.AddFile("materials/turtle/errorcleanse_opaque.vmt")
-	resource.AddFile("materials/turtle/errorcleanse_opaque.vtf")
-	resource.AddFile("materials/turtle/newmissing.vmt")
-	resource.AddFile("materials/turtle/newmissing.vtf")
-	return
+if ( game.SinglePlayer() ) then
+    return
 end
 
-if game.SinglePlayer() then
-	return
+if ( SERVER ) then
+
+    AddCSLuaFile()
+    
+    resource.AddFile( "models/props/smallcubetrt.mdl" )
+    resource.AddFile( "materials/turtle/errorcleanse_opaque.vmt" )
+    resource.AddFile( "materials/turtle/errorcleanse_opaque.vtf" )
+    resource.AddFile( "materials/turtle/newmissing.vmt" )
+    resource.AddFile( "materials/turtle/newmissing.vtf" )
+    
+    return
 end
 
-local NewCube = ClientsideModel( 'models/props/smallcubetrt.mdl', RENDERGROUP_BOTH )
-local NoGC = { NewCube }
+--[[--------------------------------------------------------------------------
+-- Localized Functions & Variables
+--------------------------------------------------------------------------]]--
 
-local InvalidMins = Vector( -8, -38, 0 ) -- I wrote this code 2 years ago and I don't remember why I put this here.
-local InvalidMaxs = Vector( 9, 44, 67 ) -- It's probably important for some reason.
+local IsValid = IsValid
+local Vector = Vector
+local math = math
+local render = render
 
-NewCube:SetNoDraw( true )
-NewCube:DrawShadow( false )
-
-local function FloorVector( Vec )
-	return Vector( math.floor( Vec.x ), math.floor( Vec.y ), math.floor( Vec.z ) )
+local function floorVector( vec )
+    vec.x = math.floor( vec.x )
+    vex.y = math.floor( vec.y )
+    vec.z = math.floor( vec.z )
 end
 
--- Using a single ClientsideModel as it's far faster to draw it multiple times than creating one for every entity.
--- There's a few quirks to this, but they're not as important as the speed difference.
+--[[--------------------------------------------------------------------------
+-- Namespace Tables
+--------------------------------------------------------------------------]]--
 
-local KeepTexture	= CreateClientConVar( 'ErrorCleanse_KeepTexture', 0, true, false )
-local KeepColor		= CreateClientConVar( 'ErrorCleanse_KeepColor', 1, true, false )
-local DrawNoBounds	= CreateClientConVar( 'ErrorCleanse_DrawNoBounds', 1, true, false )
+errorcleanse = errorcleanse or {}
 
-local function DrawError( self )
-	if !self.ErrorCleanse then return end
-	if !self.ErrorCleanse.Matrix then return end
-	if !KeepTexture:GetBool() then render.MaterialOverride( 0 ) end
-	if !KeepColor:GetBool() then render.SetBlend( 1 ); render.SetColorModulation( 1, 1, 1 ) end
-	
-		NewCube:SetRenderOrigin( self:LocalToWorld( self:OBBCenter() ) )
-		NewCube:SetRenderAngles( self:GetAngles() )
-		
-		NewCube:EnableMatrix( 'RenderMultiply', self.ErrorCleanse.Matrix )
+--[[--------------------------------------------------------------------------
+-- Namespace Functions
+--------------------------------------------------------------------------]]--
+function errorcleanse.Initialize()
+    -- This is hacky and should only be a temporary fix. I should be finding a better way to detect whether or not it's OK to replace.
+    errorcleanse.ClassBlacklist = {
+        ["class cluaeffect"] = true,
+        ["class c_baseflex"] = true,
+        viewmodel            = true,
+    }
+    
+    errorcleanse.ZeroMatix = Matrix()
+    errorcleanse.ZeroMatix:Scale( Vector( 0, 0, 0 ) )
+    
+    errorcleanse.ReplacementEnt = errorcleanse.ReplacementEnt or ClientsideModel( "models/props/smallcubetrt.mdl", RENDERGROUP_BOTH )
+    errorcleanse.ReplacementEnt:SetNoDraw( true )
+    errorcleanse.ReplacementEnt:DrawShadow( false )
+    errorcleanse.ReplacementEnt:DestroyShadow()
+    
+    -- When the server is also missing the content, it has no way of knowing the actual size of the model.
+    -- Such cases (e.g. workshop dupes) can be identified if they use the following OBBS min/maxs.
+    errorcleanse.InvalidMins = Vector( -8, -38,  0 ) 
+    errorcleanse.InvalidMaxs = Vector(  9,  44, 67 )
+    
+    -- Using a single ClientsideModel as it's far faster to draw it multiple times than creating one for every entity.
+    -- There's a few quirks to this, but they're not as important as the speed difference.
+    errorcleanse.KeepTexture  = CreateClientConVar( "errorcleanse_keeptexture",  0, true, false )
+    errorcleanse.KeepColor    = CreateClientConVar( "errorcleanse_keepcolor",    1, true, false )
+    errorcleanse.DrawNoBounds = CreateClientConVar( "errorcleanse_drawnobounds", 1, true, false )
+    
+    --[[--------------------------------------------------------------------------
+    -- DrawError( entity )
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.DrawError( ent )
+        if not ent.ECMatrix then return end
+        
+        if not errorcleanse.KeepTexture:GetBool() then
+            render.MaterialOverride( 0 )
+        end
+        
+        if not errorcleanse.KeepColor:GetBool() then
+            render.SetBlend( 1 )
+            render.SetColorModulation( 1, 1, 1 )
+        end
+        
+        errorcleanse.ReplacementEnt:SetRenderOrigin( ent:LocalToWorld( ent:OBBCenter() ) )
+        errorcleanse.ReplacementEnt:SetRenderAngles( ent:GetAngles() )
+        
+        errorcleanse.ReplacementEnt:EnableMatrix( "RenderMultiply", ent.ECMatrix )
+        errorcleanse.ReplacementEnt:SetupBones()
+        
+        errorcleanse.ReplacementEnt:DrawModel()
+    end
 
-		NewCube:SetupBones()
-		NewCube:DrawModel()
-		
-	NewCube:SetRenderOrigin()
-	NewCube:SetRenderAngles()
+    --[[--------------------------------------------------------------------------
+    -- IsValidError( entity )
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.IsValidError( ent )
+        if not IsValid( ent ) then return false end
+        if not ent:GetTable() then return false end
+        if ent:GetModel() ~= "models/error.mdl" then return false end
+        
+        if errorcleanse.ClassBlacklist[ ent:GetClass() ] then return false end
+        if ent.Widget then return false end
+        if ent:GetPhysicsObjectCount() > 1 then return false end -- This doesn't work well with ragdolls. :x
+
+        -- Below seems to return and ignore content spawned in from workshop dupes that not even the server has,
+        -- since then the client has no way of knowing the real model bounds and can't properly scale the matrix.
+        -- I'd argue the replacement entity is still better to see than the default ERROR model, so it is commented.
+        --if floorVector(ent:OBBMins()) == errorcleanse.InvalidMins && floorVector(ent:OBBMaxs()) == errorcleanse.InvalidMaxs then print("obbs") return end
+
+
+        --if ent:BoundingRadius() == 0 then ent:SetNoDraw( not errorcleanse.DrawNoBounds:GetBool() ) return end
+        
+        return true
+    end
+
+    --[[--------------------------------------------------------------------------
+    -- Hook::OnEntityCreated( entity )
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.OnEntityCreated( ent )
+        errorcleanse.Apply( ent )
+    end
+    hook.Add( "OnEntityCreated", "ErrorCleanse.OnEntityCreated", errorcleanse.OnEntityCreated )
+
+    --[[--------------------------------------------------------------------------
+    -- Apply( entity )
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.Apply( ent )
+        if not errorcleanse.IsValidError( ent ) then
+            errorcleanse.Remove( ent )
+            return
+        end
+        
+        ent.ECOriginalMins, ent.ECOriginalMaxs = ent:GetRenderBounds()
+        
+        local mins = ent:OBBMins()
+        local maxs = ent:OBBMaxs()
+        
+        ent.ECMatrix = Matrix()
+        ent.ECMatrix:Scale( (maxs - mins) / 2 )
+        
+        ent:DrawShadow( false )
+        ent:DestroyShadow()
+        
+        errorcleanse.ApplyRenderOverride( ent )
+        
+        ent:SetRenderBounds( mins, maxs )
+        
+        -- HACK: The propspawn effect sometimes replaces RenderOverride, so run it again!
+        --SafeRemoveEntity( ent.SpawnEffect )
+        --[[timer.Create( "ErrorCleanse.RenderOverride."..ent:EntIndex(), 0.5, 10, function()
+            errorcleanse.ApplyRenderOverride(ent)
+        end )]]
+        
+        ent.ErrorCleansed = true
+    end
+
+    --[[--------------------------------------------------------------------------
+    -- ApplyRenderOverride( entity )
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.ApplyRenderOverride( ent )
+        ent.RenderOverride = errorcleanse.DrawError
+        ent:EnableMatrix( "RenderMultiply", errorcleanse.ZeroMatix )
+    end
+
+    --[[--------------------------------------------------------------------------
+    -- Remove( entity )
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.Remove( ent )
+        if not IsValid( ent )    then return end
+        if not ent.ErrorCleansed then return end
+        
+        ent.RenderOverride = nil
+        ent:DisableMatrix( "RenderMultiply" )
+        
+        ent:DrawShadow( true )
+        
+        if ent.ECOriginalMins and ent.ECOriginalMaxs then
+            ent:SetRenderBounds( ent.ECOriginalMins, ent.ECOriginalMaxs )
+        end
+        
+        ent.ErrorCleansed = nil
+    end
+
+    --[[--------------------------------------------------------------------------
+    -- ReplaceMaterial
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.ReplaceMaterial()
+        -- This was an experiment to replace the purple&black material.
+        local replacementTexture   = Material( "turtle/newmissing" )
+        local originalErrorTexture = Material( "turtle/random_error_this/is/not/real-" )
+        
+        originalErrorTexture:SetTexture( "$basetexture", replacementTexture:GetTexture( "$basetexture" ) )
+    end
+    concommand.Add( "errorcleanse_replace_missing_material", errorcleanse.ReplaceMaterial )
+
+    --[[--------------------------------------------------------------------------
+    -- Reinitialize
+    --------------------------------------------------------------------------]]--
+    function errorcleanse.Reinitialize()
+        for _, ent in ipairs( ents.GetAll() ) do
+            errorcleanse.OnEntityCreated( ent )
+        end
+    end
+    hook.Add( "InitPostEntity", "ErrorCleanse.InitPostEntity", Reinitialize )
+    concommand.Add( "errorcleanse_reinitialize", errorcleanse.Reinitialize )
+
+    timer.Create( "ErrorCleanse.AddErrors", 1, 0, ents.GetAll ) -- This fixes entities sometimes not getting OnEntityCreated called for them.
 end
-
--- This is hacky and should only be a temporary fix. I should be finding a better way to detect whether or not it's OK to replace.
-local Blacklist = {}
-Blacklist['class cluaeffect'] = true
-Blacklist['viewmodel'] = true
-
-local function ValidError( Ent )
-	if !IsValid( Ent ) then return end
-	if !Ent:GetTable() then return end
-	if Ent:GetModel() != 'models/error.mdl' then return end
-	
-	if Blacklist[ Ent:GetClass():lower() ] then return end
-	if Ent.Widget then return end
-	
-	if FloorVector(Ent:OBBMins()) == InvalidMins && FloorVector(Ent:OBBMaxs()) == InvalidMaxs then return end
-	if Ent:GetPhysicsObjectCount() > 1 then return end -- This doesn't work well with ragdolls. :x
-	--if Ent:BoundingRadius() == 0 then Ent:SetNoDraw( !DrawNoBounds:GetBool() ) return end
-	
-	return true
-end
-
-local function ApplyRenderOverride( Ent )
-	if !ValidError( Ent ) then return end
-	Ent.RenderOverride = DrawError
-	--Ent.Draw = DrawError
-	
-	local NullScale = Matrix()
-	NullScale:Scale( vector_origin )
-	Ent:EnableMatrix( 'RenderMultiply', NullScale )
-end
-
-local function UnapplyErrorCleanse( Ent )
-	if !IsValid( Ent ) then return end
-	if !Ent.ErrorCleansed then return end
-	
-	Ent.RenderOverride = nil
-	Ent:DisableMatrix( 'RenderMultiply' )
-	
-	Ent:DrawShadow( true ) -- Kinda shitty if the entity wasn't supposed to have shadows for some reason.
-	
-	if Ent.OldMins && Ent.OldMaxs then
-		Ent:SetRenderBounds( Ent.OldMins, Ent.OldMaxs )
-	end
-	
-	timer.Destroy( 'ErrorCleanse.RO.'..Ent:EntIndex() )
-	timer.Destroy( 'ErrorCleanse.Apply.'..Ent:EntIndex() )
-	
-	Ent.ErrorCleansed = false
-end
-
-local function ApplyErrorCleanse()
-	if !ValidError( Ent ) then
-		UnapplyErrorCleanse( Ent )
-		return
-	end
-	
-	Ent.OldMins, Ent.OldMaxs = Ent:GetRenderBounds()
-	
-	local Mins = Ent:OBBMins()
-	local Maxs = Ent:OBBMaxs()
-	
-	Ent.ErrorCleanse = {}
-	Ent.ErrorCleanse.Matrix = Matrix()
-	Ent.ErrorCleanse.Matrix:Scale( (Maxs - Mins)/2 )
-	
-	ApplyRenderOverride( Ent )
-	
-	Ent:DrawShadow( false )
-	Ent:SetRenderBounds( Mins, Maxs )
-	
-	-- HACK: The propspawn effect sometimes replaces RenderOverride, so run it again!
-	SafeRemoveEntity( Ent.SpawnEffect )
-	timer.Create( 'ErrorCleanse.RO.'..Ent:EntIndex(), 0.5, 10, function() ApplyRenderOverride(Ent) end)
-	
-	Ent.ErrorCleansed = true
-end
-
-local function Spawned( Ent )
-	if !ValidError( Ent ) then return end
-	timer.Create( 'ErrorCleanse.Apply.'..Ent:EntIndex(), 5, 6, function()
-		ApplyErrorCleanse( Ent )
-	end)
-end
-
-local function ReInitialize()
-	for K, Ent in pairs( ents.GetAll() ) do
-		Spawned( Ent )
-	end
-end
-
-local function ReplaceMissingMat() -- This was an expirement to replace the purple&black material.
-	local NewError = Material( 'turtle/newmissing' )
-	local ErrorTex = Material('turtle/random_error_this/is/not/real-')
-	
-	ErrorTex:SetMaterialTexture( '$basetexture', NewError:GetMaterialTexture( '$basetexture' ) )
-end
-
--- Apply everything!
-
-hook.Add( 'OnEntityCreated', 'ErrorCleanse.Spawned', Spawned )
-hook.Add( 'InitPostEntity', 'ErrorCleanse.InitPostEntity', ReInitialize )
-
-timer.Create( 'ErrorCleanse.AddErrors', 0.25, 0, ents.GetAll ) -- This fixes entities sometimes not getting OnEntityCreated called for them.
-timer.Create( 'ErrorCleanse.ReInitialize', 15, 0, ReInitialize ) -- This shouldn't even be required -- but I feel I should include it incase something is missed first time.
-
-concommand.Add( 'ErrorCleanse_ReInit', ReInitialize )
-concommand.Add( 'ErrorCleanse_ReplaceMissingMat', ReplaceMissingMat )
+hook.Add( "InitPostEntity", "errorcleanse.initialize", errorcleanse.Initialize )
